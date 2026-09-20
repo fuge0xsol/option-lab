@@ -173,7 +173,7 @@
     </div>
     <div class="readout" id="surfRead"></div>
     <div class="surf-note">
-      <b>怎么看</b>：横轴为行权价 K，纵深为剩余期限 T，高度与颜色为隐含波动率 σ。<b>红点</b>是当前平值（ATM）位置，高度恒等于 σ 滑块值 ——
+      <b>怎么看</b>：横轴为行权价 K，纵深为剩余期限 T，高度与颜色为隐含波动率 σ（<b>明暗为光照效果</b>，坡面朝光处亮、背光处暗；色彩对比经自动拉伸增强，图例首尾为实际最小/最大值）。<b>红点</b>是当前平值（ATM）位置，高度恒等于 σ 滑块值 ——
       拖动 <b style="color:var(--red)">σ</b> 整个曲面升降；拖动 <b style="color:var(--red)">S / K</b> 曲面左右平移；拖动 <b>T</b> 红点沿期限结构滑动，同时翼部（深虚值/深实值区域）随期限缩短而翘起。
       前面四页希腊字母的 BSM 计算使用的是<b>平值波动率</b>（即红点高度）作为常数 σ；真实交易中会对曲面按 K / T 插值取数。
       本曲面为<b>参数化微笑教学示意</b>（Skew/Smile 形态为固定系数），真实曲面来自市场各期限、各行权价期权可靠的隐含波动率。
@@ -460,22 +460,25 @@ function greekFormula(g,kind){
 /* ================= 波动率曲面（参数化微笑，教学示意） =================
    σ(K,T) = σ_atm + [A·d² − B·d] · 30/(30+T天)，d = ln(K/F)/√(T_eff)
    F=S·e^{rT} 为远期价；d=0（平值）时恒等于 σ 滑块值；期限越长翼部越平 */
-const SURF = { nK:25, nT:17, KminF:0.72, KmaxF:1.28, Tmin:7, Tmax:365, A:6.0, B:2.2 };
+const SURF = { nK:29, nT:21, KminF:0.68, KmaxF:1.32, Tmin:7, Tmax:365, A:7.5, B:2.5 };
 const surfCv = document.getElementById('surfCanvas');
 
-function smileVol(Kv, Td, S_, r_, sig_){
-  const Teff = Math.sqrt((Td+30)/365);
+function smileVol(Kv, Td, S_, r_, sig_, daysRef){
+  const Teff = Math.sqrt((Td+90)/365);
   const F = S_*Math.exp(r_*Td/365);
   const d = Math.log(Kv/F)/Teff;
-  return Math.max(0.03, Math.min(1.2, sig_ + (SURF.A*d*d - SURF.B*d)*30/(30+Td)/100));
+  /* 期限结构倾斜：绕当前期限（红点）枢轴，短端略高、长端略低；红点处恒为 σ 滑块值 */
+  const tilt = sig_*0.08*(Math.exp(-Td/90) - Math.exp(-(daysRef==null?Td:daysRef)/90));
+  return Math.max(0.03, Math.min(1.2, sig_ + tilt + (SURF.A*d*d - SURF.B*d)*60/(60+Td)/100));
 }
-function rampColor(t){ /* 蓝→青→黄→橙→红 */
+function rampArr(t){ /* 蓝→青→黄→橙→红，返回[r,g,b]便于做光照乘法 */
   const stops=[[0,[37,99,235]],[0.35,[14,165,164]],[0.55,[234,179,8]],[0.8,[249,115,22]],[1,[220,38,38]]];
   let a=stops[0], b=stops[stops.length-1];
   for(let k=0;k<stops.length-1;k++) if(t>=stops[k][0]&&t<=stops[k+1][0]){a=stops[k];b=stops[k+1];break;}
   const f=(t-a[0])/((b[0]-a[0])||1);
-  return `rgb(${a[1].map((c,i)=>Math.round(c+(b[1][i]-c)*f)).join(',')})`;
+  return a[1].map((c,i)=>Math.round(c+(b[1][i]-c)*f));
 }
+function rampColor(t){ const c=rampArr(t); return `rgb(${c[0]},${c[1]},${c[2]})`; }
 
 /* 3D 视角状态：方位角 az / 仰角 el / 缩放 zoom（可拖动旋转） */
 const VIEW0={az:-38*Math.PI/180, el:26*Math.PI/180, zoom:1};
@@ -496,15 +499,17 @@ function drawSurface(){
   for(let j=0;j<nT;j++) Ts.push(SURF.Tmin+(SURF.Tmax-SURF.Tmin)*j/(nT-1));
   let vmin=1e9, vmax=-1e9;
   for(let j=0;j<nT;j++){ G.push([]);
-    for(let i=0;i<nK;i++){ const v=smileVol(Ks[i],Ts[j],S,sr,sg);
+    for(let i=0;i<nK;i++){ const v=smileVol(Ks[i],Ts[j],S,sr,sg,days);
       G[j].push(v); if(v<vmin)vmin=v; if(v>vmax)vmax=v; } }
   const pad=(vmax-vmin)*0.05+1e-6; vmin-=pad; vmax+=pad;
-  /* σ 绝对量程（台阶式）：σ 滑块变大时曲面整体可见抬升，而非每帧重归一化 */
+  /* 颜色：按网格实际σ范围归一化 + 非线性对比拉伸（低值区色彩展开，避免大片单色；
+     图例仅标注首尾=实际最小/最大，与拉伸自洽）；高度：绝对量程保住σ抬升联动 */
   const axisMax=Math.max(0.6, Math.ceil(vmax*1.3/0.2)*0.2);
-  const WN=v=>Math.min(1,Math.max(0,v/axisMax));
+  const WN=v=>Math.min(1,Math.max(0,v/axisMax));          /* 高度用 */
+  const WC=v=>{ const t=Math.min(1,Math.max(0,(v-vmin)/(vmax-vmin))); return Math.pow(t,0.45); };
 
   /* ---- 3D 相机：yaw(az) → 俯仰(el) 正交投影，自动取景 ---- */
-  const Lk=800, Lt=430, zh=140;
+  const Lk=800, Lt=430, zh=175;
   const ca=Math.cos(view.az), sa=Math.sin(view.az);
   const ce=Math.cos(view.el), se=Math.sin(view.el);
   const rot=(x,y,z)=>{ const x1=x*ca-y*sa, y1=x*sa+y*ca;
@@ -538,15 +543,25 @@ function drawSurface(){
     const w00=WN(G[j][i]), w10=WN(G[j][i+1]), w11=WN(G[j+1][i+1]), w01=WN(G[j+1][i]);
     quads.push({d:(rot(i/(nK-1)*Lk, j/(nT-1)*Lt, w00*zh).d + rot((i+1)/(nK-1)*Lk, j/(nT-1)*Lt, w10*zh).d
                  + rot((i+1)/(nK-1)*Lk, (j+1)/(nT-1)*Lt, w11*zh).d + rot(i/(nK-1)*Lk, (j+1)/(nT-1)*Lt, w01*zh).d)/4,
-      w00,w10,w11,w01, u0:i/(nK-1), u1:(i+1)/(nK-1), v0:j/(nT-1), v1:(j+1)/(nT-1)});
+      w00,w10,w11,w01, cv:G[j][i]+G[j][i+1]+G[j+1][i+1]+G[j+1][i],
+      u0:i/(nK-1), u1:(i+1)/(nK-1), v0:j/(nT-1), v1:(j+1)/(nT-1)});
   }
   quads.sort((a,b)=>b.d-a.d); /* 深(远)先画 */
-  ctx.lineWidth=0.6;
+  /* 法向光照：亮暗随坡度变化，强化高低起伏的立体感 */
+  const Lv=[0.35,-0.5,0.78], Lm=Math.hypot(Lv[0],Lv[1],Lv[2]), Ln=Lv.map(v=>v/Lm);
+  ctx.lineWidth=0.7; ctx.strokeStyle='rgba(15,23,42,0.25)'; /* 深色细网格线，类线框浮雕 */
   for(const q of quads){
-    const p00=P(q.u0*Lk,q.v0*Lt,q.w00*zh), p10=P(q.u1*Lk,q.v0*Lt,q.w10*zh),
-          p11=P(q.u1*Lk,q.v1*Lt,q.w11*zh), p01=P(q.u0*Lk,q.v1*Lt,q.w01*zh);
-    const c=rampColor((q.w00+q.w10+q.w11+q.w01)/4);
-    ctx.fillStyle=c; ctx.strokeStyle=c;
+    const x0=q.u0*Lk, x1=q.u1*Lk, y0=q.v0*Lt, y1=q.v1*Lt;
+    const z00=q.w00*zh, z10=q.w10*zh, z01=q.w01*zh;
+    const ax=x1-x0, az=z10-z00, by=y1-y0, bz=z01-z00;
+    let nx=-az*by, ny=-ax*bz, nz=ax*by;
+    const nm=Math.hypot(nx,ny,nz)||1; nx/=nm; ny/=nm; nz/=nm;
+    if(nz<0){ nx=-nx; ny=-ny; nz=-nz; }
+    const sh=Math.min(1.3, 0.55+0.65*Math.max(0, nx*Ln[0]+ny*Ln[1]+nz*Ln[2]));
+    const c=rampArr(WC(q.cv/4));
+    ctx.fillStyle=`rgb(${Math.min(255,Math.round(c[0]*sh))},${Math.min(255,Math.round(c[1]*sh))},${Math.min(255,Math.round(c[2]*sh))})`;
+    const p00=P(x0,y0,z00), p10=P(x1,y0,z10),
+          p11=P(x1,y1,q.w11*zh), p01=P(x0,y1,z01);
     ctx.beginPath();ctx.moveTo(p00.x,p00.y);ctx.lineTo(p10.x,p10.y);
     ctx.lineTo(p11.x,p11.y);ctx.lineTo(p01.x,p01.y);ctx.closePath();
     ctx.fill();ctx.stroke();
@@ -576,7 +591,7 @@ function drawSurface(){
 
   /* K 刻度（y=0 边）与 T 刻度（x=0 边） */
   ctx.fillStyle='#64748b'; ctx.textAlign='center';
-  for(const f of [0.72,0.86,1,1.14,1.28]){
+  for(const f of [0.68,0.84,1,1.16,1.32]){
     const p=P((K*f-Kmin)/(Kmax-Kmin)*Lk, 0, 0);
     ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
     ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+5);ctx.stroke();
@@ -585,14 +600,18 @@ function drawSurface(){
     labelRects.push({x:p.x-w/2-2, y:p.y+7, w:w+4, h:14});
   }
   ctx.textAlign='end';
-  for(const td of [7,30,90,180,365]){
-    const p=P(0, (td-SURF.Tmin)/(SURF.Tmax-SURF.Tmin)*Lt, 0);
+  const tTicks=[7,30,90,180,365].map(td=>({td, p:P(0, (td-SURF.Tmin)/(SURF.Tmax-SURF.Tmin)*Lt, 0)}));
+  tTicks.sort((a,b)=>a.p.y-b.p.y);
+  let tPrevY=-1e9;
+  for(const t of tTicks){
     ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
-    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x-5,p.y);ctx.stroke();
-    const s=td+'天', w=ctx.measureText(s).width, tx=Math.max(p.x-8, 40);
+    ctx.beginPath();ctx.moveTo(t.p.x,t.p.y);ctx.lineTo(t.p.x-5,t.p.y);ctx.stroke();
+    const s=t.td+'天', w=ctx.measureText(s).width, tx=Math.max(t.p.x-8, 40);
+    const ly=Math.max(t.p.y+4, tPrevY+15); /* 纵向最小间距，防近端标签叠压 */
+    tPrevY=ly;
     ctx.fillStyle='#64748b';
-    halo(s, tx, p.y+4); /* 钳制防左缘裁切 */
-    labelRects.push({x:tx-w-2, y:p.y-7, w:w+4, h:14});
+    halo(s, tx, ly); /* 钳制防左缘裁切 */
+    labelRects.push({x:tx-w-2, y:ly-7, w:w+4, h:14});
   }
   ctx.textAlign='center'; ctx.fillStyle='#334155';
   ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
@@ -608,7 +627,7 @@ function drawSurface(){
   /* 颜色图例 */
   const lgX=1058, lgY=140, lgH=280, lgW=16;
   const grad=ctx.createLinearGradient(0,lgY,0,lgY+lgH);
-  for(let k=0;k<=10;k++) grad.addColorStop(k/10, rampColor(1-k/10));
+  for(let k=0;k<=10;k++) grad.addColorStop(k/10, rampColor(Math.pow(1-k/10,0.45)));
   ctx.fillStyle=grad; ctx.fillRect(lgX,lgY,lgW,lgH);
   ctx.strokeStyle='#cbd5e1'; ctx.strokeRect(lgX,lgY,lgW,lgH);
   ctx.fillStyle='#64748b'; ctx.textAlign='start';
@@ -653,7 +672,7 @@ function drawSurface(){
   ctx.fillText('🖱 在曲面上拖动旋转视角 · 双击复位 · 右上角缩放', 14, H-12);
 
   /* 动态解读 */
-  const wing=(Td,dir)=>smileVol(S*Math.exp(sr*Td/365)*(1+dir),Td,S,sr,sg)*100;
+  const wing=(Td,dir)=>smileVol(S*Math.exp(sr*Td/365)*(1+dir),Td,S,sr,sg,days)*100;
   document.getElementById('surfRead').innerHTML=
     `红点为<b class="r">当前平值位置</b>（远期 F≈${f2(F)}，T=${days}天），高度恒等于 σ 滑块值 <b class="r">${sigma.toFixed(1)}%</b>。`+
     `以 F±20% 的翼部为例：7天期 IV ≈ 看跌 <b class="r">${wing(7,-0.2).toFixed(1)}%</b> / 看涨 <b class="b">${wing(7,0.2).toFixed(1)}%</b>，`+
