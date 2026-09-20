@@ -5,7 +5,7 @@
 单文件、零依赖、纯前端。理论价值与希腊字母均由 Black–Scholes–Merton 闭式解实时计算，仅供教学演示。
 
 - GitHub Pages: https://fuge0xsol.github.io/optionlab/
-- Cloudflare Pages: https://optionlab.pages.dev
+- Cloudflare Pages: https://optionlabs.pages.dev
 
 ## 更新发布
 
