@@ -117,6 +117,13 @@
   footer{max-width:1240px;margin:6px auto 0;padding:14px 20px 30px;font-size:12px;color:#8a94a6;line-height:1.8}
   footer b{color:var(--sub)}
 
+  /* ---------- vol surface ---------- */
+  .surf-wrap{max-width:1240px;margin:0 auto;padding:0 20px 6px}
+  .surf-wrap .card{margin-bottom:16px}
+  #surfCanvas{width:100%;height:auto;display:block}
+  .surf-note{font-size:12.5px;color:var(--sub);margin-top:10px;line-height:1.75}
+  .surf-note b{color:var(--ink)}
+
   @media (max-width:1020px){
     .greeks{grid-template-columns:repeat(2,1fr)}
     .console-in{grid-template-columns:repeat(2,1fr)}
@@ -147,9 +154,24 @@
 
 <main id="pages"></main>
 
+<div class="surf-wrap">
+  <div class="card">
+    <h2>波动率曲面 · Volatility Surface（随滑块实时联动）</h2>
+    <canvas id="surfCanvas"></canvas>
+    <div class="readout" id="surfRead"></div>
+    <div class="surf-note">
+      <b>怎么看</b>：横轴为行权价 K，纵深为剩余期限 T，高度与颜色为隐含波动率 σ。<b>红点</b>是当前平值（ATM）位置，高度恒等于 σ 滑块值 ——
+      拖动 <b style="color:var(--red)">σ</b> 整个曲面升降；拖动 <b style="color:var(--red)">S / K</b> 曲面左右平移；拖动 <b>T</b> 红点沿期限结构滑动，同时翼部（深虚值/深实值区域）随期限缩短而翘起。
+      前面四页希腊字母的 BSM 计算使用的是<b>平值波动率</b>（即红点高度）作为常数 σ；真实交易中会对曲面按 K / T 插值取数。
+      本曲面为<b>参数化微笑教学示意</b>（Skew/Smile 形态为固定系数），真实曲面来自市场各期限、各行权价期权可靠的隐含波动率。
+    </div>
+  </div>
+</div>
+
 <footer>
   <b>模型假设与免责声明</b>：本站采用 Black–Scholes–Merton 模型（欧式期权、标的服从对数正态分布、波动率 σ 与利率 r 为常数、无分红、无交易成本）。
   权利金单位为 元/吨；Vega 为波动率每变动 1 个百分点的价值变化；Theta 为每自然日的价值变化（一年按 365 天）。
+  波动率曲面为参数化微笑示意（skew/smile 系数固定，不随行情自学习），非实时市场数据。
   理论价值 ≠ 市场价格，本站仅供教学演示，不构成任何投资建议。
 </footer>
 
@@ -422,6 +444,158 @@ function greekFormula(g,kind){
     : `Θ = −${F.frac(`${F.i('S')}·φ(${d1})·σ`, `2√${F.i('T')}`)} + ${F.i('r')}·${F.i('K')}·e<sup>−${F.i('rT')}</sup>·N(−${d2})`;
 }
 
+/* ================= 波动率曲面（参数化微笑，教学示意） =================
+   σ(K,T) = σ_atm + [A·d² − B·d] · 30/(30+T天)，d = ln(K/F)/√(T_eff)
+   F=S·e^{rT} 为远期价；d=0（平值）时恒等于 σ 滑块值；期限越长翼部越平 */
+const SURF = { nK:25, nT:17, KminF:0.72, KmaxF:1.28, Tmin:7, Tmax:365, A:6.0, B:2.2 };
+const surfCv = document.getElementById('surfCanvas');
+
+function smileVol(Kv, Td, S_, r_, sig_){
+  const Teff = Math.sqrt((Td+30)/365);
+  const F = S_*Math.exp(r_*Td/365);
+  const d = Math.log(Kv/F)/Teff;
+  return Math.max(0.03, Math.min(1.2, sig_ + (SURF.A*d*d - SURF.B*d)*30/(30+Td)/100));
+}
+function rampColor(t){ /* 蓝→青→黄→橙→红 */
+  const stops=[[0,[37,99,235]],[0.35,[14,165,164]],[0.55,[234,179,8]],[0.8,[249,115,22]],[1,[220,38,38]]];
+  let a=stops[0], b=stops[stops.length-1];
+  for(let k=0;k<stops.length-1;k++) if(t>=stops[k][0]&&t<=stops[k+1][0]){a=stops[k];b=stops[k+1];break;}
+  const f=(t-a[0])/((b[0]-a[0])||1);
+  return `rgb(${a[1].map((c,i)=>Math.round(c+(b[1][i]-c)*f)).join(',')})`;
+}
+
+function drawSurface(){
+  const dpr=window.devicePixelRatio||1, W=1160, H=560;
+  if(surfCv.width!==Math.round(W*dpr)){ surfCv.width=Math.round(W*dpr); surfCv.height=Math.round(H*dpr); }
+  const ctx=surfCv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  const {S,K,sigma,days,r}=state, sr=r/100, sg=sigma/100;
+  const Kmin=K*SURF.KminF, Kmax=K*SURF.KmaxF;
+  const nK=SURF.nK, nT=SURF.nT;
+  const Ks=[], Ts=[], G=[];
+  for(let i=0;i<nK;i++) Ks.push(Kmin+(Kmax-Kmin)*i/(nK-1));
+  for(let j=0;j<nT;j++) Ts.push(SURF.Tmin+(SURF.Tmax-SURF.Tmin)*j/(nT-1));
+  let vmin=1e9, vmax=-1e9;
+  for(let j=0;j<nT;j++){ G.push([]);
+    for(let i=0;i<nK;i++){ const v=smileVol(Ks[i],Ts[j],S,sr,sg);
+      G[j].push(v); if(v<vmin)vmin=v; if(v>vmax)vmax=v; } }
+  const pad=(vmax-vmin)*0.05+1e-6; vmin-=pad; vmax+=pad;
+  /* σ 绝对量程（台阶式）：σ 滑块变大时曲面整体可见抬升，而非每帧重归一化 */
+  const axisMax=Math.max(0.6, Math.ceil(vmax*1.3/0.2)*0.2);
+  const WN=v=>Math.min(1,Math.max(0,v/axisMax));
+
+  /* 斜二测投影：K轴右前、T轴左后、σ向上 */
+  const ox=268, oy=308, Lk=840, Lt=470, zh=140;
+  const P=(u,v,w)=>({x:ox+u*Lk*0.88+v*Lt*(-0.52), y:oy+u*Lk*0.24+v*Lt*(-0.42)-w*zh});
+  ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+
+  /* 底平面网格（深度参照） */
+  ctx.strokeStyle='#e2e8f0'; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){ const u=i/4, a=P(u,0,0), b=P(u,1,0);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke(); }
+  for(let j=0;j<=4;j++){ const v=j/4, a=P(0,v,0), b=P(1,v,0);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke(); }
+  ctx.strokeStyle='#cbd5e1';
+  ctx.beginPath();ctx.moveTo(P(0,0,0).x,P(0,0,0).y);ctx.lineTo(P(1,0,0).x,P(1,0,0).y);
+  ctx.lineTo(P(1,1,0).x,P(1,1,0).y);ctx.lineTo(P(0,1,0).x,P(0,1,0).y);ctx.closePath();ctx.stroke();
+
+  /* 曲面：远排先画、近排后画 */
+  ctx.lineWidth=0.6;
+  for(let j=nT-2;j>=0;j--) for(let i=0;i<nK-1;i++){
+    const w00=WN(G[j][i]), w10=WN(G[j][i+1]), w11=WN(G[j+1][i+1]), w01=WN(G[j+1][i]);
+    const p00=P(i/(nK-1), j/(nT-1), w00), p10=P((i+1)/(nK-1), j/(nT-1), w10),
+          p11=P((i+1)/(nK-1), (j+1)/(nT-1), w11), p01=P(i/(nK-1), (j+1)/(nT-1), w01);
+    const c=rampColor((w00+w10+w11+w01)/4);
+    ctx.fillStyle=c; ctx.strokeStyle=c;
+    ctx.beginPath();ctx.moveTo(p00.x,p00.y);ctx.lineTo(p10.x,p10.y);
+    ctx.lineTo(p11.x,p11.y);ctx.lineTo(p01.x,p01.y);ctx.closePath();
+    ctx.fill();ctx.stroke();
+  }
+
+  /* σ 竖轴 + 刻度（底部刻度与 T 轴“7天”标签同位，只画线不标注；文字加白晕防压线） */
+  const o0=P(0,0,0), oT=P(0,0,1);
+  ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
+  ctx.beginPath();ctx.moveTo(o0.x,o0.y);ctx.lineTo(oT.x,oT.y);ctx.stroke();
+  for(let k=0;k<=4;k++){ const v=axisMax*k/4, p=P(0,0,WN(v));
+    ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.moveTo(p.x-4,p.y);ctx.lineTo(p.x,p.y);ctx.stroke();
+    if(k===0) continue;
+    const s=(v*100).toFixed(0)+'%';
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.9)';
+    ctx.strokeText(s, p.x-7, p.y+4);
+    ctx.fillStyle='#475569'; ctx.fillText(s, p.x-7, p.y+4); }
+  ctx.textAlign='center';
+  ctx.fillStyle='#334155'; ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  ctx.lineWidth=3.5; ctx.strokeStyle='rgba(255,255,255,.92)';
+  ctx.strokeText('隐含波动率 σ（%）', oT.x+86, oT.y-14);
+  ctx.fillText('隐含波动率 σ（%）', oT.x+86, oT.y-14);
+  ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+
+  /* K 刻度（前沿）与 T 刻度（左侧） */
+  ctx.fillStyle='#64748b';
+  for(const f of [0.72,0.86,1,1.14,1.28]){
+    const u=(K*f-Kmin)/(Kmax-Kmin), p=P(u,0,0);
+    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+5);ctx.stroke();
+    ctx.fillText(Math.round(K*f).toString(), p.x, p.y+18);
+  }
+  ctx.textAlign='end';
+  for(const td of [7,30,90,180,365]){
+    const v=(td-SURF.Tmin)/(SURF.Tmax-SURF.Tmin), p=P(0,v,0);
+    ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x-5,p.y);ctx.stroke();
+    const tx=Math.max(p.x-8, 40); /* 防止“365天”被画布左缘裁切 */
+    const s=td+'天';
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.strokeText(s,tx,p.y+4);
+    ctx.fillStyle='#64748b'; ctx.fillText(s,tx,p.y+4);
+  }
+  ctx.textAlign='center'; ctx.fillStyle='#334155';
+  ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  const fr=P(1,0,0), fl=P(0,1,0);
+  ctx.fillText('行权价 K（元/吨）', fr.x-80, fr.y+42);
+  ctx.textAlign='start';
+  ctx.fillText('期限 T', fl.x+2, fl.y-12);
+  ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+
+  /* 颜色图例 */
+  const lgX=1058, lgY=140, lgH=280, lgW=16;
+  const grad=ctx.createLinearGradient(0,lgY,0,lgY+lgH);
+  for(let k=0;k<=10;k++) grad.addColorStop(k/10, rampColor(1-k/10));
+  ctx.fillStyle=grad; ctx.fillRect(lgX,lgY,lgW,lgH);
+  ctx.strokeStyle='#cbd5e1'; ctx.strokeRect(lgX,lgY,lgW,lgH);
+  ctx.fillStyle='#64748b'; ctx.textAlign='start';
+  ctx.fillText((vmax*100).toFixed(1)+'%', lgX+lgW+6, lgY+8);
+  ctx.fillText((vmin*100).toFixed(1)+'%', lgX+lgW+6, lgY+lgH);
+  ctx.fillStyle='#334155'; ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  ctx.fillText('IV', lgX+2, lgY-10);
+  ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+
+  /* 当前平值标记（红点，恒等于 σ 滑块值） */
+  const F=S*Math.exp(sr*days/365);
+  const uM=Math.min(1,Math.max(0,(F-Kmin)/(Kmax-Kmin)));
+  const vM=(days-SURF.Tmin)/(SURF.Tmax-SURF.Tmin);
+  const base=P(uM,vM,0), tip=P(uM,vM,Math.min(1,Math.max(0,WN(sg))));
+  ctx.strokeStyle='#e11d48'; ctx.setLineDash([4,3]); ctx.lineWidth=1.3;
+  ctx.beginPath();ctx.moveTo(base.x,base.y);ctx.lineTo(tip.x,tip.y);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();ctx.arc(tip.x,tip.y,5.5,0,7);ctx.fillStyle='#e11d48';ctx.fill();
+  ctx.lineWidth=2; ctx.strokeStyle='#fff'; ctx.stroke();
+  ctx.textAlign='start'; ctx.font='bold 12px Consolas,monospace';
+  ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.85)';
+  const lbl=`ATM ${sigma.toFixed(1)}%`;
+  ctx.strokeText(lbl, tip.x+10, tip.y-10);
+  ctx.fillStyle='#e11d48'; ctx.fillText(lbl, tip.x+10, tip.y-10);
+
+  /* 动态解读 */
+  const wing=(Td,dir)=>smileVol(S*Math.exp(sr*Td/365)*(1+dir),Td,S,sr,sg)*100;
+  document.getElementById('surfRead').innerHTML=
+    `红点为<b class="r">当前平值位置</b>（远期 F≈${f2(F)}，T=${days}天），高度恒等于 σ 滑块值 <b class="r">${sigma.toFixed(1)}%</b>。`+
+    `以 F±20% 的翼部为例：7天期 IV ≈ 看跌 <b class="r">${wing(7,-0.2).toFixed(1)}%</b> / 看涨 <b class="b">${wing(7,0.2).toFixed(1)}%</b>，`+
+    `365天期收敛至 <b class="r">${wing(365,-0.2).toFixed(1)}%</b> / <b class="b">${wing(365,0.2).toFixed(1)}%</b> —— <b>短端翼部更陡、长期趋平</b>是波动率曲面的典型形态。`+
+    `拖动 <b class="r">S / K</b> 曲面平移，拖动 <b class="r">T</b> 红点沿期限结构滑动，拖动 <b class="r">σ</b> 曲面整体升降。`;
+}
+
 /* ================= 渲染 ================= */
 function linspace(a,b,n){ const o=[]; for(let i=0;i<n;i++) o.push(a+(b-a)*i/(n-1)); return o; }
 
@@ -541,6 +715,7 @@ P = <span class="p">${f2(K)}</span>×<span class="n">${disc.toFixed(4)}</span>×
       `价格每变动 10 元，价值约变动 <b class="${G.delta*10>=0?'r':'g'}">${money(G.delta*10)}</b>（Delta=${sgn(G.delta,4)}，Gamma=${sgn(G.gamma,5)} 使 Delta 再漂移 ${sgn(G.gamma*10,4)}）。`+
       `波动率 +1pp 贡献 <b class="${G.vega>=0?'r':'g'}">${money(G.vega)}</b> 元；每过一天时间价值 ${G.theta>=0?'增 <b class="r">'+f2(G.theta):'耗 <b class="g">'+f2(G.theta)}</b> 元。`;
   }
+  drawSurface();
 }
 
 /* ================= 事件绑定 ================= */
