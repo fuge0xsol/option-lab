@@ -120,7 +120,13 @@
   /* ---------- vol surface ---------- */
   .surf-wrap{max-width:1240px;margin:0 auto;padding:0 20px 6px}
   .surf-wrap .card{margin-bottom:16px}
-  #surfCanvas{width:100%;height:auto;display:block}
+  .surf-box{position:relative}
+  #surfCanvas{width:100%;height:auto;display:block;cursor:grab;touch-action:none}
+  .surf-ctl{position:absolute;top:10px;right:12px;display:flex;gap:6px}
+  .surf-ctl button{font:12px/1.2 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#475569;
+    background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:7px;padding:6px 10px;
+    cursor:pointer;box-shadow:0 1px 3px rgba(20,40,90,.08)}
+  .surf-ctl button:hover{color:var(--blue);border-color:var(--blue)}
   .surf-note{font-size:12.5px;color:var(--sub);margin-top:10px;line-height:1.75}
   .surf-note b{color:var(--ink)}
 
@@ -156,8 +162,15 @@
 
 <div class="surf-wrap">
   <div class="card">
-    <h2>波动率曲面 · Volatility Surface（随滑块实时联动）</h2>
-    <canvas id="surfCanvas"></canvas>
+    <h2>波动率曲面 · Volatility Surface（3D 可旋转 · 随滑块实时联动）</h2>
+    <div class="surf-box">
+      <canvas id="surfCanvas"></canvas>
+      <div class="surf-ctl">
+        <button type="button" id="svReset" title="复位视角">复位视角</button>
+        <button type="button" id="svIn" title="放大">＋</button>
+        <button type="button" id="svOut" title="缩小">－</button>
+      </div>
+    </div>
     <div class="readout" id="surfRead"></div>
     <div class="surf-note">
       <b>怎么看</b>：横轴为行权价 K，纵深为剩余期限 T，高度与颜色为隐含波动率 σ。<b>红点</b>是当前平值（ATM）位置，高度恒等于 σ 滑块值 ——
@@ -464,6 +477,10 @@ function rampColor(t){ /* 蓝→青→黄→橙→红 */
   return `rgb(${a[1].map((c,i)=>Math.round(c+(b[1][i]-c)*f)).join(',')})`;
 }
 
+/* 3D 视角状态：方位角 az / 仰角 el / 缩放 zoom（可拖动旋转） */
+const VIEW0={az:-38*Math.PI/180, el:26*Math.PI/180, zoom:1};
+const view={...VIEW0};
+
 function drawSurface(){
   const dpr=window.devicePixelRatio||1, W=1160, H=560;
   if(surfCv.width!==Math.round(W*dpr)){ surfCv.width=Math.round(W*dpr); surfCv.height=Math.round(H*dpr); }
@@ -486,76 +503,106 @@ function drawSurface(){
   const axisMax=Math.max(0.6, Math.ceil(vmax*1.3/0.2)*0.2);
   const WN=v=>Math.min(1,Math.max(0,v/axisMax));
 
-  /* 斜二测投影：K轴右前、T轴左后、σ向上 */
-  const ox=268, oy=308, Lk=840, Lt=470, zh=140;
-  const P=(u,v,w)=>({x:ox+u*Lk*0.88+v*Lt*(-0.52), y:oy+u*Lk*0.24+v*Lt*(-0.42)-w*zh});
+  /* ---- 3D 相机：yaw(az) → 俯仰(el) 正交投影，自动取景 ---- */
+  const Lk=800, Lt=430, zh=140;
+  const ca=Math.cos(view.az), sa=Math.sin(view.az);
+  const ce=Math.cos(view.el), se=Math.sin(view.el);
+  const rot=(x,y,z)=>{ const x1=x*ca-y*sa, y1=x*sa+y*ca;
+    return {x:x1, s:-(y1*se+z*ce), d:y1}; };
+  let bx0=1e9,bx1=-1e9,by0=1e9,by1=-1e9;
+  for(const cx of [0,Lk]) for(const cy of [0,Lt]) for(const cz of [0,zh]){
+    const q=rot(cx,cy,cz);
+    if(q.x<bx0)bx0=q.x; if(q.x>bx1)bx1=q.x; if(q.s<by0)by0=q.s; if(q.s>by1)by1=q.s; }
+  const sc=Math.min(W*0.80/(bx1-bx0), H*0.84/(by1-by0))*view.zoom;
+  const OX=W/2-(bx0+bx1)/2*sc, OY=H/2-(by0+by1)/2*sc;
+  const P=(x,y,z)=>{ const q=rot(x,y,z); return {x:OX+q.x*sc, y:OY+q.s*sc, d:q.d}; };
   ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  /* 屏幕空间已占用的文字矩形（供 ATM 标签避让） */
+  const labelRects=[];
+  const hit=r=>labelRects.some(o=>r.x<o.x+o.w && r.x+r.w>o.x && r.y<o.y+o.h && r.y+r.h>o.y);
 
   /* 底平面网格（深度参照） */
   ctx.strokeStyle='#e2e8f0'; ctx.lineWidth=1;
-  for(let i=0;i<=4;i++){ const u=i/4, a=P(u,0,0), b=P(u,1,0);
+  for(let i=0;i<=4;i++){ const a=P(Lk*i/4,0,0), b=P(Lk*i/4,Lt,0);
     ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke(); }
-  for(let j=0;j<=4;j++){ const v=j/4, a=P(0,v,0), b=P(1,v,0);
+  for(let j=0;j<=4;j++){ const a=P(0,Lt*j/4,0), b=P(Lk,Lt*j/4,0);
     ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke(); }
   ctx.strokeStyle='#cbd5e1';
-  ctx.beginPath();ctx.moveTo(P(0,0,0).x,P(0,0,0).y);ctx.lineTo(P(1,0,0).x,P(1,0,0).y);
-  ctx.lineTo(P(1,1,0).x,P(1,1,0).y);ctx.lineTo(P(0,1,0).x,P(0,1,0).y);ctx.closePath();ctx.stroke();
+  const c00=P(0,0,0), c10=P(Lk,0,0), c11=P(Lk,Lt,0), c01=P(0,Lt,0);
+  ctx.beginPath();ctx.moveTo(c00.x,c00.y);ctx.lineTo(c10.x,c10.y);
+  ctx.lineTo(c11.x,c11.y);ctx.lineTo(c01.x,c01.y);ctx.closePath();ctx.stroke();
 
-  /* 曲面：远排先画、近排后画 */
-  ctx.lineWidth=0.6;
-  for(let j=nT-2;j>=0;j--) for(let i=0;i<nK-1;i++){
+  /* 曲面四边形：按相机深度远→近排序绘制 */
+  const quads=[];
+  for(let j=0;j<nT-1;j++) for(let i=0;i<nK-1;i++){
     const w00=WN(G[j][i]), w10=WN(G[j][i+1]), w11=WN(G[j+1][i+1]), w01=WN(G[j+1][i]);
-    const p00=P(i/(nK-1), j/(nT-1), w00), p10=P((i+1)/(nK-1), j/(nT-1), w10),
-          p11=P((i+1)/(nK-1), (j+1)/(nT-1), w11), p01=P(i/(nK-1), (j+1)/(nT-1), w01);
-    const c=rampColor((w00+w10+w11+w01)/4);
+    quads.push({d:(rot(i/(nK-1)*Lk, j/(nT-1)*Lt, w00*zh).d + rot((i+1)/(nK-1)*Lk, j/(nT-1)*Lt, w10*zh).d
+                 + rot((i+1)/(nK-1)*Lk, (j+1)/(nT-1)*Lt, w11*zh).d + rot(i/(nK-1)*Lk, (j+1)/(nT-1)*Lt, w01*zh).d)/4,
+      w00,w10,w11,w01, u0:i/(nK-1), u1:(i+1)/(nK-1), v0:j/(nT-1), v1:(j+1)/(nT-1)});
+  }
+  quads.sort((a,b)=>b.d-a.d); /* 深(远)先画 */
+  ctx.lineWidth=0.6;
+  for(const q of quads){
+    const p00=P(q.u0*Lk,q.v0*Lt,q.w00*zh), p10=P(q.u1*Lk,q.v0*Lt,q.w10*zh),
+          p11=P(q.u1*Lk,q.v1*Lt,q.w11*zh), p01=P(q.u0*Lk,q.v1*Lt,q.w01*zh);
+    const c=rampColor((q.w00+q.w10+q.w11+q.w01)/4);
     ctx.fillStyle=c; ctx.strokeStyle=c;
     ctx.beginPath();ctx.moveTo(p00.x,p00.y);ctx.lineTo(p10.x,p10.y);
     ctx.lineTo(p11.x,p11.y);ctx.lineTo(p01.x,p01.y);ctx.closePath();
     ctx.fill();ctx.stroke();
   }
 
-  /* σ 竖轴 + 刻度（底部刻度与 T 轴“7天”标签同位，只画线不标注；文字加白晕防压线） */
-  const o0=P(0,0,0), oT=P(0,0,1);
+  /* 轴/刻度/标题（画在曲面之后，白晕保证可读） */
+  const halo=(s,x,y)=>{ ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.9)';
+    ctx.strokeText(s,x,y); ctx.fillText(s,x,y); };
+
+  /* σ 竖轴（原点角） */
+  const o0=P(0,0,0), oT=P(0,0,zh);
   ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
   ctx.beginPath();ctx.moveTo(o0.x,o0.y);ctx.lineTo(oT.x,oT.y);ctx.stroke();
-  for(let k=0;k<=4;k++){ const v=axisMax*k/4, p=P(0,0,WN(v));
+  ctx.textAlign='end';
+  for(let k=0;k<=4;k++){ const v=axisMax*k/4, p=P(0,0,zh*k/4);
     ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
     ctx.beginPath();ctx.moveTo(p.x-4,p.y);ctx.lineTo(p.x,p.y);ctx.stroke();
-    if(k===0) continue;
-    const s=(v*100).toFixed(0)+'%';
-    ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.9)';
-    ctx.strokeText(s, p.x-7, p.y+4);
-    ctx.fillStyle='#475569'; ctx.fillText(s, p.x-7, p.y+4); }
-  ctx.textAlign='center';
-  ctx.fillStyle='#334155'; ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
-  ctx.lineWidth=3.5; ctx.strokeStyle='rgba(255,255,255,.92)';
-  ctx.strokeText('隐含波动率 σ（%）', oT.x+86, oT.y-14);
-  ctx.fillText('隐含波动率 σ（%）', oT.x+86, oT.y-14);
+    if(k===0) continue; /* 底部刻度与“7天”同位，只画线不标注 */
+    const s=(v*100).toFixed(0)+'%', w=ctx.measureText(s).width;
+    ctx.fillStyle='#475569'; halo(s, p.x-7, p.y+4);
+    labelRects.push({x:p.x-7-w-2, y:p.y-7, w:w+4, h:14}); }
+  ctx.textAlign='start'; ctx.fillStyle='#334155';
+  ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  halo('隐含波动率 σ（%）', Math.min(oT.x+8, 960), Math.min(Math.max(oT.y-10, 18), H-20));
+  labelRects.push({x:Math.min(oT.x+8,960)-2, y:Math.min(Math.max(oT.y-10,18),H-20)-12, w:120, h:16});
   ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
 
-  /* K 刻度（前沿）与 T 刻度（左侧） */
-  ctx.fillStyle='#64748b';
+  /* K 刻度（y=0 边）与 T 刻度（x=0 边） */
+  ctx.fillStyle='#64748b'; ctx.textAlign='center';
   for(const f of [0.72,0.86,1,1.14,1.28]){
-    const u=(K*f-Kmin)/(Kmax-Kmin), p=P(u,0,0);
+    const p=P((K*f-Kmin)/(Kmax-Kmin)*Lk, 0, 0);
+    ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
     ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+5);ctx.stroke();
-    ctx.fillText(Math.round(K*f).toString(), p.x, p.y+18);
+    const s=Math.round(K*f).toString(), w=ctx.measureText(s).width;
+    halo(s, p.x, p.y+18);
+    labelRects.push({x:p.x-w/2-2, y:p.y+7, w:w+4, h:14});
   }
   ctx.textAlign='end';
   for(const td of [7,30,90,180,365]){
-    const v=(td-SURF.Tmin)/(SURF.Tmax-SURF.Tmin), p=P(0,v,0);
+    const p=P(0, (td-SURF.Tmin)/(SURF.Tmax-SURF.Tmin)*Lt, 0);
     ctx.strokeStyle='#94a3b8'; ctx.lineWidth=1.2;
     ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x-5,p.y);ctx.stroke();
-    const tx=Math.max(p.x-8, 40); /* 防止“365天”被画布左缘裁切 */
-    const s=td+'天';
-    ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.strokeText(s,tx,p.y+4);
-    ctx.fillStyle='#64748b'; ctx.fillText(s,tx,p.y+4);
+    const s=td+'天', w=ctx.measureText(s).width, tx=Math.max(p.x-8, 40);
+    ctx.fillStyle='#64748b';
+    halo(s, tx, p.y+4); /* 钳制防左缘裁切 */
+    labelRects.push({x:tx-w-2, y:p.y-7, w:w+4, h:14});
   }
   ctx.textAlign='center'; ctx.fillStyle='#334155';
   ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
-  const fr=P(1,0,0), fl=P(0,1,0);
-  ctx.fillText('行权价 K（元/吨）', fr.x-80, fr.y+42);
+  const kx=Math.min(Math.max(c10.x-30, 100), 980), ky=Math.min(c10.y+30, H-14);
+  halo('行权价 K（元/吨）', kx, ky);
+  labelRects.push({x:kx-58, y:ky-12, w:116, h:16});
   ctx.textAlign='start';
-  ctx.fillText('期限 T', fl.x+2, fl.y-12);
+  const tx2=Math.min(c01.x+8, 1000), ty2=Math.min(Math.max(c01.y-10, 18), H-20);
+  halo('期限 T', tx2, ty2);
+  labelRects.push({x:tx2-2, y:ty2-12, w:50, h:16});
   ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
 
   /* 颜色图例 */
@@ -570,22 +617,40 @@ function drawSurface(){
   ctx.fillStyle='#334155'; ctx.font='bold 12px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
   ctx.fillText('IV', lgX+2, lgY-10);
   ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  labelRects.push({x:lgX-6, y:lgY-26, w:lgW+72, h:lgH+36});
 
-  /* 当前平值标记（红点，恒等于 σ 滑块值） */
+  /* 当前平值标记（红点，恒等于 σ 滑块值）；标签做屏幕空间避让 */
   const F=S*Math.exp(sr*days/365);
   const uM=Math.min(1,Math.max(0,(F-Kmin)/(Kmax-Kmin)));
   const vM=(days-SURF.Tmin)/(SURF.Tmax-SURF.Tmin);
-  const base=P(uM,vM,0), tip=P(uM,vM,Math.min(1,Math.max(0,WN(sg))));
+  const base=P(uM*Lk,vM*Lt,0), tip=P(uM*Lk,vM*Lt,Math.min(1,Math.max(0,WN(sg)))*zh);
   ctx.strokeStyle='#e11d48'; ctx.setLineDash([4,3]); ctx.lineWidth=1.3;
   ctx.beginPath();ctx.moveTo(base.x,base.y);ctx.lineTo(tip.x,tip.y);ctx.stroke();
   ctx.setLineDash([]);
   ctx.beginPath();ctx.arc(tip.x,tip.y,5.5,0,7);ctx.fillStyle='#e11d48';ctx.fill();
   ctx.lineWidth=2; ctx.strokeStyle='#fff'; ctx.stroke();
   ctx.textAlign='start'; ctx.font='bold 12px Consolas,monospace';
-  ctx.lineWidth=3; ctx.strokeStyle='rgba(255,255,255,.85)';
-  const lbl=`ATM ${sigma.toFixed(1)}%`;
-  ctx.strokeText(lbl, tip.x+10, tip.y-10);
-  ctx.fillStyle='#e11d48'; ctx.fillText(lbl, tip.x+10, tip.y-10);
+  const lbl=`ATM ${sigma.toFixed(1)}%`, tw=ctx.measureText(lbl).width, th=14;
+  const cands=[[10,-22,'start'],[10,18,'start'],[-10,-22,'end'],[-10,20,'end'],[0,-26,'center']];
+  let lp=null;
+  for(const [dx,dy,al] of cands){
+    const ax=tip.x+dx, ay=tip.y+dy;
+    const rx= al==='start'? ax-2 : al==='end'? ax-tw-2 : ax-tw/2-2;
+    const rr={x:rx, y:ay-th-2, w:tw+4, h:th+5};
+    if(rr.x<6 || rr.y<14 || rr.x+rr.w>W-6 || rr.y+rr.h>H-6) continue;
+    if(!hit(rr)){ lp={x:ax, y:ay, al, r:rr}; break; }
+  }
+  if(!lp){ const rr={x:tip.x+8, y:tip.y-th-10, w:tw+4, h:th+5}; lp={x:tip.x+10, y:tip.y-12, al:'start', r:rr}; }
+  ctx.fillStyle='rgba(255,255,255,.88)';
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(lp.r.x, lp.r.y, lp.r.w, lp.r.h, 4); else ctx.rect(lp.r.x, lp.r.y, lp.r.w, lp.r.h);
+  ctx.fill();
+  ctx.textAlign=lp.al; ctx.fillStyle='#e11d48';
+  ctx.fillText(lbl, lp.x, lp.y);
+
+  /* 操作提示 */
+  ctx.fillStyle='#94a3b8'; ctx.font='11px -apple-system,Segoe UI,Microsoft YaHei,sans-serif';
+  ctx.fillText('🖱 在曲面上拖动旋转视角 · 双击复位 · 右上角缩放', 14, H-12);
 
   /* 动态解读 */
   const wing=(Td,dir)=>smileVol(S*Math.exp(sr*Td/365)*(1+dir),Td,S,sr,sg)*100;
@@ -595,6 +660,22 @@ function drawSurface(){
     `365天期收敛至 <b class="r">${wing(365,-0.2).toFixed(1)}%</b> / <b class="b">${wing(365,0.2).toFixed(1)}%</b> —— <b>短端翼部更陡、长期趋平</b>是波动率曲面的典型形态。`+
     `拖动 <b class="r">S / K</b> 曲面平移，拖动 <b class="r">T</b> 红点沿期限结构滑动，拖动 <b class="r">σ</b> 曲面整体升降。`;
 }
+
+/* 视角交互：拖动旋转 / 双击复位 / 按钮缩放 */
+let svDrag=null;
+surfCv.addEventListener('pointerdown',e=>{ svDrag={x:e.clientX,y:e.clientY,az:view.az,el:view.el};
+  surfCv.setPointerCapture(e.pointerId); surfCv.style.cursor='grabbing'; });
+surfCv.addEventListener('pointermove',e=>{ if(!svDrag) return;
+  view.az=svDrag.az+(e.clientX-svDrag.x)*0.008;
+  view.el=Math.min(1.35,Math.max(0.08,svDrag.el+(svDrag.y-e.clientY)*0.006));
+  drawSurface(); });
+const svEnd=()=>{ svDrag=null; surfCv.style.cursor='grab'; };
+surfCv.addEventListener('pointerup',svEnd);
+surfCv.addEventListener('pointercancel',svEnd);
+surfCv.addEventListener('dblclick',()=>{ Object.assign(view,VIEW0); drawSurface(); });
+document.getElementById('svReset').addEventListener('click',()=>{ Object.assign(view,VIEW0); drawSurface(); });
+document.getElementById('svIn').addEventListener('click',()=>{ view.zoom=Math.min(1.8,view.zoom*1.18); drawSurface(); });
+document.getElementById('svOut').addEventListener('click',()=>{ view.zoom=Math.max(0.6,view.zoom/1.18); drawSurface(); });
 
 /* ================= 渲染 ================= */
 function linspace(a,b,n){ const o=[]; for(let i=0;i<n;i++) o.push(a+(b-a)*i/(n-1)); return o; }
