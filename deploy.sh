@@ -14,6 +14,6 @@ fi
 git push
 
 # 2. Cloudflare Pages：wrangler 直传
-wrangler pages deploy . --project-name=option-lab --branch=main --commit-dirty=true
+wrangler pages deploy . --project-name=optionlab --branch=main --commit-dirty=true
 
-echo "完成: https://fuge0xsol.github.io/option-lab/ (Actions 构建约 1 分钟)  |  https://option-lab.pages.dev"
+echo "完成: https://fuge0xsol.github.io/optionlab/ (Actions 构建约 1 分钟)  |  https://optionlab.pages.dev"
